@@ -105,6 +105,11 @@ export class Worker {
       for (const p of this.inFlight.values()) p.abort.abort('shutdown' satisfies AbortReason);
       await Promise.all([...this.inFlight.values()].map((p) => p.promise));
     }
+    // A clean exit is not a dead worker. Crashes leave the row behind, which
+    // correctly shows as stale on the dashboard.
+    await this.opts.pool
+      .query('DELETE FROM worker_heartbeats WHERE worker_id = $1', [this.opts.workerId])
+      .catch((err) => this.opts.log.warn({ err: { message: (err as Error).message } }, 'could not remove heartbeat'));
   }
 
   private async beat(initial: boolean): Promise<void> {

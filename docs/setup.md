@@ -28,7 +28,27 @@ Each service connects to PostgreSQL with its own role:
 
 - Ubuntu Server 24.04 with Docker Engine and the Compose plugin; `systemctl is-enabled docker` must say `enabled`.
 - A DHCP reservation on the router for the workstation (currently `10.0.0.125`).
+- The boot-time binding setting below (one command, needs `sudo`).
 - Node.js 24 and pnpm (via `corepack enable`), for development and tests only.
+
+### Boot-time network binding
+
+Caddy binds only to the reserved LAN address. At boot, Docker can start before
+DHCP has assigned that address. When that happens, the bind fails with
+`cannot assign requested address`, and Docker does not retry, so the dashboard
+stays down after a reboot. This was observed on 2026-11-25, when Wi-Fi took
+2.7 s longer than Docker to come up.
+
+Allow binding to an address that is not assigned yet. Traffic flows as soon as
+DHCP assigns it:
+
+```bash
+echo 'net.ipv4.ip_nonlocal_bind = 1' | sudo tee /etc/sysctl.d/60-xpm-nonlocal-bind.conf
+sudo sysctl --system
+```
+
+A wired connection (`enp193s0`) is also recommended over Wi-Fi for an always-on
+server.
 
 ## First installation
 
@@ -69,6 +89,7 @@ if you delete it, a new CA is created and every device must trust the new root.
 
 | Task | Command |
 |------|---------|
+| Health check (run after every reboot) | `scripts/check-health.sh` |
 | Status | `docker compose ps` |
 | Logs | `docker compose logs -f server worker` |
 | Reset a password (revokes all of that user's sessions) | `docker compose run --rm --no-deps server node apps/server/dist/cli.js admin reset-password --username <name>` |
@@ -129,6 +150,7 @@ persistence across a real reboot:
 1. Sign in, open **Jobs**, and enqueue a few sample jobs.
 2. `sudo reboot`
 3. After boot, without running any commands, open `https://10.0.0.125`. You should still be signed in (if within the idle timeout), and the same jobs should be listed with no duplicates.
+4. Run `scripts/check-health.sh`; every check should pass.
 
 ### Manual check: LAN exposure from another device
 

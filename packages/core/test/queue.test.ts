@@ -310,11 +310,13 @@ describe('Worker runtime', () => {
     expect(final?.result).toBeNull();
   });
 
-  it('records a heartbeat', async () => {
+  it('records a heartbeat while running and removes it on graceful stop', async () => {
     const w = new Worker({ pool: db.newPool(), workerId: 'hb', handlers: {}, log, pollMs: 20 });
     await w.start();
-    await w.stop();
     const { rows } = await db.pool.query(`SELECT worker_id FROM worker_heartbeats`);
     expect(rows).toEqual([{ worker_id: 'hb' }]);
+    await w.stop();
+    const after = await db.pool.query(`SELECT worker_id FROM worker_heartbeats`);
+    expect(after.rows).toEqual([]);
   });
 });

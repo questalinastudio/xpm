@@ -22,13 +22,13 @@ describe('migrations', () => {
   it('are idempotent on a migrated database', async () => {
     const again = await migrate(db.pool);
     expect(again.applied).toEqual([]);
-    expect(again.current).toBe('0001_foundation');
+    expect(again.current).toBe('0002_worker_heartbeat_cleanup');
   });
 
   it('refuse to run if an applied migration was modified', async () => {
     await db.pool.query(`UPDATE schema_migrations SET checksum = 'tampered' WHERE version = '0001'`);
     await expect(migrate(db.pool)).rejects.toThrow(/checksum mismatch/);
-    const { rows } = await db.pool.query(`SELECT checksum FROM schema_migrations`);
+    const { rows } = await db.pool.query(`SELECT checksum FROM schema_migrations WHERE version = '0001'`);
     // restore for other tests
     const { loadMigrations } = await import('../src/migrate.js');
     const [m] = await loadMigrations();
