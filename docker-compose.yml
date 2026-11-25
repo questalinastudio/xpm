@@ -91,6 +91,19 @@ services:
     depends_on:
       migrate: { condition: service_completed_successfully }
 
+  # Master key tool (interactive, on demand): docker compose run --rm keytool <command>
+  keytool:
+    <<: *app
+    profiles: [tools]
+    restart: "no"
+    entrypoint: ["node", "packages/core/dist/key-cli.js"]
+    command: ["help"]
+    network_mode: none
+    environment:
+      XPM_MASTER_KEY_FILE: /secrets/protected_master_key
+    volumes:
+      - ${XPM_SECRETS_DIR:-./secrets}:/secrets
+
   caddy:
     image: caddy:2.10-alpine
     restart: unless-stopped

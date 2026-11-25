@@ -6,3 +6,4 @@ export * from './password.js';
 export * from './queue.js';
 export * from './secrets.js';
 export * from './worker.js';
+export * from './crypto.js';
