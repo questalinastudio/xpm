@@ -1,0 +1,121 @@
+# Questalina Desk. Only Caddy publishes ports, and only on XPM_BIND_ADDR.
+# PostgreSQL, the server, and the worker are reachable solely on Docker networks.
+name: ${COMPOSE_PROJECT_NAME:-xpm}
+
+x-app: &app
+  image: xpm-app:${XPM_IMAGE_TAG:-local}
+  build: .
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  init: true
+
+x-db-env: &db-env
+  PGHOST: postgres
+  PGPORT: "5432"
+  PGDATABASE: xpm
+  TZ: UTC
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: xpm
+      POSTGRES_USER: xpm_owner
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_owner_password
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    secrets: [pg_owner_password]
+    volumes:
+      - ${XPM_DATA_DIR:-./data}/postgres:/var/lib/postgresql/data
+    shm_size: 256mb
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xpm_owner -d xpm"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    <<: *app
+    restart: "no"
+    command: ["node", "packages/core/dist/migrate-cli.js"]
+    environment:
+      <<: *db-env
+      PGUSER: xpm_owner
+      PGPASSWORD_FILE: /run/secrets/pg_owner_password
+      XPM_WEB_DB_PASSWORD_FILE: /run/secrets/pg_web_password
+      XPM_WORKER_DB_PASSWORD_FILE: /run/secrets/pg_worker_password
+    secrets: [pg_owner_password, pg_web_password, pg_worker_password]
+    networks: [internal]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  server:
+    <<: *app
+    command: ["node", "apps/server/dist/main.js"]
+    environment:
+      <<: *db-env
+      PGUSER: xpm_web
+      PGPASSWORD_FILE: /run/secrets/pg_web_password
+      XPM_PUBLIC_ORIGIN: ${XPM_PUBLIC_ORIGIN:?set XPM_PUBLIC_ORIGIN in .env}
+      XPM_SAMPLE_DATA: ${XPM_SAMPLE_DATA:-false}
+      XPM_SESSION_TTL_HOURS: ${XPM_SESSION_TTL_HOURS:-12}
+      XPM_SESSION_IDLE_MINUTES: ${XPM_SESSION_IDLE_MINUTES:-60}
+    secrets: [pg_web_password]
+    networks: [internal, edge]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    <<: *app
+    command: ["node", "apps/worker/dist/main.js"]
+    environment:
+      <<: *db-env
+      PGUSER: xpm_worker
+      PGPASSWORD_FILE: /run/secrets/pg_worker_password
+      XPM_SAMPLE_DATA: ${XPM_SAMPLE_DATA:-false}
+      XPM_WORKER_NAME: worker
+      XPM_JOB_LEASE_MS: ${XPM_JOB_LEASE_MS:-30000}
+    secrets: [pg_worker_password]
+    networks: [internal]
+    stop_grace_period: 30s
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      XPM_HOST: ${XPM_HOST:?set XPM_HOST in .env}
+    ports:
+      - "${XPM_BIND_ADDR:?set XPM_BIND_ADDR in .env}:${XPM_HTTPS_PORT:-443}:443"
+      - "${XPM_BIND_ADDR}:${XPM_HTTP_PORT:-80}:80"
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${XPM_DATA_DIR:-./data}/caddy:/data
+    networks: [edge]
+    depends_on:
+      server: { condition: service_healthy }
+
+networks:
+  # No route to the outside world: database and worker traffic stays here.
+  internal:
+    internal: true
+  edge: {}
+
+secrets:
+  pg_owner_password:
+    file: ${XPM_SECRETS_DIR:-./secrets}/pg_owner_password
+  pg_web_password:
+    file: ${XPM_SECRETS_DIR:-./secrets}/pg_web_password
+  pg_worker_password:
+    file: ${XPM_SECRETS_DIR:-./secrets}/pg_worker_password

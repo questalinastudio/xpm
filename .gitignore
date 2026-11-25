@@ -1,0 +1,10 @@
+plans/
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.env
+data/
+secrets/
+.acceptance/
+*.crt

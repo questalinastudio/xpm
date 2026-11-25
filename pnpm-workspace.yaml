@@ -1,0 +1,10 @@
+packages:
+  - packages/*
+  - apps/*
+
+# Only esbuild may run an install script (it places its native binary).
+allowBuilds:
+  esbuild: true
+  cpu-features: false
+  protobufjs: false
+  ssh2: false

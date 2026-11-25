@@ -1,0 +1,17 @@
+{
+	# Local-only service: no ACME, no admin API, no attempt to touch the host trust store.
+	admin off
+	skip_install_trust
+	# Clients connecting to a bare IP send no SNI.
+	default_sni {$XPM_HOST}
+}
+
+https://{$XPM_HOST} {
+	tls internal
+	encode zstd gzip
+	reverse_proxy server:3000
+}
+
+http://{$XPM_HOST} {
+	redir https://{host}{uri} permanent
+}
