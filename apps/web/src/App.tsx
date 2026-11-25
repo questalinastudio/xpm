@@ -287,10 +287,145 @@ function CasesPanel() {
 }
 
 // ---------------------------------------------------------------------------
+// Agent activity (Milestone 2 inspection view; full trace viewer in M4)
+// ---------------------------------------------------------------------------
+
+interface TurnRow {
+  id: string; logical_key: string; attempt_no: number; agent_role: string; purpose: string; status: string;
+  error: string | null; llm_call_count: number; tool_call_count: number; created_at: string; case_reference: string | null;
+}
+interface TurnDetail {
+  turn: TurnRow & { output: unknown; decision_summary: unknown };
+  attempts: { id: string; attempt_no: number; status: string }[];
+  llmCalls: { id: string; seq: number; status: string; provider: string; model: string; instruction_version: string; latency_ms: number | null;
+    request: unknown; response: unknown; tool_requests: unknown; error: string | null; validation: unknown }[];
+  toolCalls: { id: string; seq: number; tool: string; authz: string; denial_reason: string | null; status: string; arguments: unknown; result: unknown; error: string | null }[];
+}
+
+function Json({ value }: { value: unknown }) {
+  return <details><summary className="muted">show</summary><pre>{JSON.stringify(value, null, 2)}</pre></details>;
+}
+
+function TurnView({ id, onSelect }: { id: string; onSelect: (id: string) => void }) {
+  const { data, error } = usePoll(() => api<TurnDetail>(`/api/agent/turns/${id}`), 3000, [id]);
+  if (error) return <p className="error">{error}</p>;
+  if (!data) return <p className="muted">Loading…</p>;
+  const t = data.turn;
+  return (
+    <aside className="card detail">
+      <h2>{t.agent_role.toUpperCase()} · {t.purpose}</h2>
+      <dl>
+        <dt>Key</dt><dd><code>{t.logical_key}</code></dd>
+        <dt>Status</dt><dd><span className={`badge ${t.status}`}>{t.status}</span>{t.error && <span className="error"> {t.error}</span>}</dd>
+        <dt>Attempts</dt>
+        <dd className="row gap">{data.attempts.map((a) => (
+          <button key={a.id} className={a.id === id ? '' : 'ghost'} onClick={() => onSelect(a.id)}>#{a.attempt_no} {a.status}</button>
+        ))}</dd>
+        {t.output !== null && (<><dt>Output</dt><dd><Json value={t.output} /></dd></>)}
+        {t.decision_summary !== null && (<><dt>Decision</dt><dd><Json value={t.decision_summary} /></dd></>)}
+      </dl>
+      <h3>Model calls</h3>
+      <div className="scroll-x"><table>
+        <thead><tr><th>#</th><th>Status</th><th>Model</th><th>Instructions</th><th>ms</th><th>Request</th><th>Response</th></tr></thead>
+        <tbody>{data.llmCalls.map((c) => (
+          <tr key={c.id}><td>{c.seq}</td><td><span className={`badge ${c.status}`}>{c.status}</span>{c.error && <div className="error wrap">{c.error}</div>}</td>
+            <td>{c.provider}/{c.model}</td><td>{c.instruction_version}</td><td>{c.latency_ms ?? '—'}</td>
+            <td><Json value={c.request} /></td><td><Json value={{ response: c.response, toolRequests: c.tool_requests, validation: c.validation }} /></td></tr>
+        ))}</tbody>
+      </table></div>
+      <h3>Tool calls</h3>
+      <div className="scroll-x"><table>
+        <thead><tr><th>#</th><th>Tool</th><th>Decision</th><th>Status</th><th>Arguments</th><th>Result</th></tr></thead>
+        <tbody>{data.toolCalls.map((c) => (
+          <tr key={c.id}><td>{c.seq}</td><td><code>{c.tool}</code></td>
+            <td><span className={`badge ${c.authz === 'denied' ? 'failed' : 'succeeded'}`}>{c.authz}</span> {c.denial_reason ?? ''}</td>
+            <td>{c.status}{c.error && <div className="error wrap">{c.error}</div>}</td><td><Json value={c.arguments} /></td><td><Json value={c.result} /></td></tr>
+        ))}</tbody>
+      </table></div>
+    </aside>
+  );
+}
+
+function AgentsPanel({ sampleMode }: { sampleMode: boolean }) {
+  const { data, error, refresh } = usePoll(() => api<{ turns: TurnRow[] }>('/api/agent/turns'), 3000, []);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  async function run(role: 'pm' | 'dev', caseReference: string) {
+    try {
+      await api('/api/demo/agent-turn', { method: 'POST', body: { role, caseReference } });
+      setMsg(`Queued ${role} turn for ${caseReference}`);
+      await refresh();
+    } catch (e) {
+      setMsg((e as Error).message);
+    }
+  }
+  return (
+    <div className="jobs-layout">
+      <section className="card">
+        <h2>Agent turns</h2>
+        {sampleMode && (
+          <div className="row gap demo">
+            <span className="muted">Simulated, injection-obedient model:</span>
+            <button className="ghost" onClick={() => run('pm', 'SAMPLE-005')}>PM on injected SMS</button>
+            <button className="ghost" onClick={() => run('pm', 'SAMPLE-001')}>PM on login loop</button>
+            <button className="ghost" onClick={() => run('dev', 'SAMPLE-002')}>Dev on CSV export</button>
+            {msg && <span className="muted">{msg}</span>}
+          </div>
+        )}
+        {error && <p className="error">{error}</p>}
+        <div className="scroll-x"><table>
+          <thead><tr><th>Created</th><th>Role</th><th>Case</th><th>Purpose</th><th>Attempt</th><th>Status</th><th>Calls</th></tr></thead>
+          <tbody>
+            {data?.turns.map((t) => (
+              <tr key={t.id} className={`clickable ${selected === t.id ? 'selected' : ''}`} onClick={() => setSelected(t.id)}>
+                <td>{fmt(t.created_at)}</td><td>{t.agent_role}</td><td>{t.case_reference ?? '—'}</td><td>{t.purpose}</td>
+                <td>{t.attempt_no}</td><td><span className={`badge ${t.status}`}>{t.status}</span></td><td>{t.llm_call_count} model · {t.tool_call_count} tool</td>
+              </tr>
+            ))}
+            {data && data.turns.length === 0 && <tr><td colSpan={7} className="muted">No agent turns yet</td></tr>}
+          </tbody>
+        </table></div>
+      </section>
+      {selected && <TurnView id={selected} onSelect={setSelected} />}
+    </div>
+  );
+}
+
+interface MessageRow {
+  id: string; source: string; sender_placeholder: string | null; subject: string; body: string; status: string;
+  held_reasons: { rule: string; field: string; marker?: string }[]; received_at: string; case_reference: string | null;
+}
+
+function MessagesPanel() {
+  const { data, error } = usePoll(() => api<{ messages: MessageRow[] }>('/api/messages'), 10000, []);
+  return (
+    <section className="card">
+      <h2>Messages (sanitized)</h2>
+      <p className="muted">What agents can see. Originals stay encrypted in the vault. Held messages are hidden from agents until reviewed.</p>
+      {error && <p className="error">{error}</p>}
+      <ul className="cases">
+        {data?.messages.map((m) => (
+          <li key={m.id}>
+            <div className="row">
+              <strong>{m.subject || '(no subject)'}</strong>
+              <span className={`badge ${m.status === 'ready' ? 'succeeded' : 'failed'}`}>{m.status.replace(/_/g, ' ')}</span>
+            </div>
+            <span className="muted">{m.source} from {m.sender_placeholder ?? '?'} · {m.case_reference ?? 'no case'} · {fmt(m.received_at)}</span>
+            {m.held_reasons.length > 0 && <p className="error">Held: {m.held_reasons.map((h) => `${h.marker ?? ''} ${h.rule}`).join(', ')}</p>}
+            <pre>{m.body}</pre>
+          </li>
+        ))}
+        {data && data.messages.length === 0 && <li className="muted">No messages yet.</li>}
+      </ul>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Shell
 // ---------------------------------------------------------------------------
 
-type Tab = 'overview' | 'jobs';
+type Tab = 'overview' | 'jobs' | 'agents' | 'messages';
 
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -339,6 +474,8 @@ export function App() {
         <nav>
           <button className={tab === 'overview' ? 'tab active' : 'tab'} onClick={() => setTab('overview')}>Overview</button>
           <button className={tab === 'jobs' ? 'tab active' : 'tab'} onClick={() => setTab('jobs')}>Jobs</button>
+          <button className={tab === 'agents' ? 'tab active' : 'tab'} onClick={() => setTab('agents')}>Agents</button>
+          <button className={tab === 'messages' ? 'tab active' : 'tab'} onClick={() => setTab('messages')}>Messages</button>
         </nav>
         <div className="row gap">
           <span className="muted">{session.username}</span>
@@ -353,6 +490,8 @@ export function App() {
           </>
         )}
         {tab === 'jobs' && <JobsPanel sampleMode={session.sampleMode ?? false} />}
+        {tab === 'agents' && <AgentsPanel sampleMode={session.sampleMode ?? false} />}
+        {tab === 'messages' && <MessagesPanel />}
       </main>
     </>
   );

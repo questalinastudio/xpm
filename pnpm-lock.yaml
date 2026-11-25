@@ -198,6 +198,36 @@ importers:
         specifier: ^3.2.0
         version: 3.2.7(@types/node@24.19.2)(yaml@2.9.1)
 
+  apps/agent-runtime:
+    dependencies:
+      '@xpm/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+
+  apps/gateway:
+    dependencies:
+      '@xpm/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@xpm/privacy':
+        specifier: workspace:*
+        version: link:../../packages/privacy
+      fastify:
+        specifier: ^5.4.0
+        version: 5.12.8
+      zod:
+        specifier: ^3.25.0
+        version: 3.25.76
+
+  apps/intake:
+    dependencies:
+      '@xpm/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@xpm/privacy':
+        specifier: workspace:*
+        version: link:../../packages/privacy
+
   apps/server:
     dependencies:
       '@fastify/cookie':
@@ -215,6 +245,9 @@ importers:
       '@xpm/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@xpm/privacy':
+        specifier: workspace:*
+        version: link:../../packages/privacy
       fastify:
         specifier: ^5.4.0
         version: 5.12.8
@@ -252,6 +285,9 @@ importers:
 
   packages/core:
     dependencies:
+      '@xpm/privacy':
+        specifier: workspace:*
+        version: link:../privacy
       pg:
         specifier: ^8.16.0
         version: 8.23.1
@@ -265,6 +301,8 @@ importers:
       '@types/pg':
         specifier: ^8.15.0
         version: 8.23.1
+
+  packages/privacy: {}
 
 packages:
 

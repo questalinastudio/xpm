@@ -109,3 +109,6 @@ tr.clickable:hover, tr.selected { background: var(--row-hover); }
 .cases li { padding: 0.75rem 0; border-bottom: 1px solid var(--border); }
 .cases li:last-child { border-bottom: none; }
 .cases p { margin: 0.35rem 0 0; }
+.badge.blocked, .badge.held_for_review { color: var(--bad); border-color: var(--bad); }
+.badge.claimed, .badge.pending, .badge.queued { color: var(--accent); border-color: var(--accent); }
+details summary { cursor: pointer; }

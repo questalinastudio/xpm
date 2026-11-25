@@ -1,6 +1,7 @@
 import { hostname } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { createLogger, createPool, dbOptionsFromEnv, Worker } from '@xpm/core';
+import { agentTurnHandler } from './agentTurn.js';
 import { demoHandlers } from './handlers.js';
 
 const log = createLogger('worker');
@@ -14,7 +15,7 @@ const worker = new Worker({
   pool,
   workerId,
   log,
-  handlers: sampleMode ? { ...demoHandlers } : {},
+  handlers: { 'agent.turn': agentTurnHandler(pool), ...(sampleMode ? demoHandlers : {}) },
   leaseMs: Number(process.env.XPM_JOB_LEASE_MS ?? 30_000),
   concurrency: Number(process.env.XPM_WORKER_CONCURRENCY ?? 2),
 });

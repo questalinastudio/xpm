@@ -6,6 +6,7 @@ import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import { z } from 'zod';
+import { scrubSecrets } from '@xpm/privacy';
 import {
   cancelJob,
   enqueue,
@@ -13,7 +14,7 @@ import {
   getJob,
   listJobs,
   queueCounts,
-  REDACT_PATHS,
+  safeLoggerOptions,
   retryJob,
   type Job,
   type Pool,
@@ -63,7 +64,7 @@ function jobView(job: Job) {
 
 export async function buildApp({ pool, config, logger = false }: AppOptions): Promise<FastifyInstance> {
   const app = Fastify({
-    logger: logger === true ? { redact: { paths: REDACT_PATHS, censor: '[REDACTED]' } } : logger,
+    logger: logger === true ? safeLoggerOptions('server') : logger,
     // Only Caddy can reach this service (it is not published), so trust its X-Forwarded-For.
     trustProxy: true,
     bodyLimit: 256 * 1024,
@@ -126,7 +127,7 @@ export async function buildApp({ pool, config, logger = false }: AppOptions): Pr
 
   app.setErrorHandler((err: { statusCode?: number; message: string }, req, reply) => {
     const status = err.statusCode && err.statusCode >= 400 && err.statusCode < 500 ? err.statusCode : 500;
-    if (status === 500) req.log.error({ err: { message: err.message } }, 'request failed');
+    if (status === 500) req.log.error({ err: { message: scrubSecrets(err.message) } }, 'request failed');
     reply.code(status).send({ error: status === 500 ? 'internal_error' : 'bad_request', message: status === 500 ? 'Internal error' : err.message });
   });
 
@@ -281,6 +282,45 @@ export async function buildApp({ pool, config, logger = false }: AppOptions): Pr
   });
 
   // -------------------------------------------------------------------------
+  // Agent activity and sanitized correspondence (owner only; read-only)
+  // -------------------------------------------------------------------------
+
+  app.get('/api/agent/turns', async (req) => {
+    const q = z.object({ limit: z.coerce.number().int().min(1).max(100).default(30) }).parse(req.query);
+    const { rows } = await pool.query(
+      `SELECT t.id, t.logical_key, t.attempt_no, t.agent_role, t.purpose, t.status, t.error, t.llm_call_count, t.tool_call_count,
+              t.created_at, t.finished_at, c.reference AS case_reference
+       FROM agent_turns t LEFT JOIN cases c ON c.id = t.case_id
+       ORDER BY t.created_at DESC LIMIT $1`,
+      [q.limit],
+    );
+    return { turns: rows };
+  });
+
+  app.get('/api/agent/turns/:id', async (req, reply) => {
+    const p = idParam.safeParse(req.params);
+    if (!p.success) return reply.code(404).send({ error: 'not_found' });
+    const turn = (await pool.query(`SELECT * FROM agent_turns WHERE id = $1`, [p.data.id])).rows[0];
+    if (!turn) return reply.code(404).send({ error: 'not_found' });
+    delete turn.ticket_hash;
+    const [llm, tools, attempts] = await Promise.all([
+      pool.query(`SELECT * FROM llm_calls WHERE turn_id = $1 ORDER BY seq`, [turn.id]),
+      pool.query(`SELECT * FROM tool_calls WHERE turn_id = $1 ORDER BY seq`, [turn.id]),
+      pool.query(`SELECT id, attempt_no, status, created_at FROM agent_turns WHERE logical_key = $1 ORDER BY attempt_no`, [turn.logical_key]),
+    ]);
+    return { turn, llmCalls: llm.rows, toolCalls: tools.rows, attempts: attempts.rows };
+  });
+
+  app.get('/api/messages', async () => {
+    const { rows } = await pool.query(
+      `SELECT m.id, m.source, m.sender_placeholder, m.subject, m.body, m.status, m.held_reasons, m.redaction_summary, m.received_at,
+              c.reference AS case_reference
+       FROM messages m LEFT JOIN cases c ON c.id = m.case_id ORDER BY m.received_at DESC LIMIT 100`,
+    );
+    return { messages: rows };
+  });
+
+  // -------------------------------------------------------------------------
   // Sample-data mode: demo jobs that exercise the queue end to end
   // -------------------------------------------------------------------------
 
@@ -290,6 +330,23 @@ export async function buildApp({ pool, config, logger = false }: AppOptions): Pr
       key: z.string().regex(/^[A-Za-z0-9:_-]{1,100}$/).optional(),
       seconds: z.number().int().min(1).max(600).optional(),
     });
+    const demoTurnBody = z.object({ role: z.enum(['pm', 'dev']), caseReference: z.string().regex(/^SAMPLE-\d{3}$/) });
+    app.post('/api/demo/agent-turn', async (req, reply) => {
+      const b = demoTurnBody.safeParse(req.body);
+      if (!b.success) return reply.code(400).send({ error: 'bad_request', message: 'Invalid demo turn' });
+      const c = (await pool.query(`SELECT id FROM cases WHERE reference = $1 AND is_sample`, [b.data.caseReference])).rows[0];
+      if (!c) return reply.code(404).send({ error: 'not_found', message: 'Unknown sample case' });
+      const logicalKey = `turn:demo:${randomUUID()}:1:1:${b.data.role}`;
+      const { job } = await enqueue(pool, {
+        idempotencyKey: logicalKey,
+        type: 'agent.turn',
+        maxAttempts: 2,
+        payload: { logicalKey, agentRole: b.data.role, purpose: b.data.role === 'pm' ? 'summarize case' : 'investigate case', caseId: c.id, deadlineSeconds: 60 },
+      });
+      await audit(pool, req.session!.username, 'demo.agent_turn', job.id, { role: b.data.role, case: b.data.caseReference });
+      return reply.code(201).send({ job: jobView(job) });
+    });
+
     app.post('/api/demo/jobs', async (req, reply) => {
       const b = demoBody.safeParse(req.body);
       if (!b.success) return reply.code(400).send({ error: 'bad_request', message: 'Invalid demo job' });

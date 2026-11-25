@@ -1,3 +1,4 @@
+import { scrubSecrets } from '@xpm/privacy';
 import { withTx, type Pool, type PoolClient, type Queryable } from './db.js';
 
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
@@ -64,8 +65,10 @@ export class IdempotencyConflictError extends Error {
 }
 
 const MAX_ERROR_LENGTH = 4000;
+/** Scrub credentials, then bound the length. Applied to every stored error. */
 export function truncateError(message: string): string {
-  return message.length > MAX_ERROR_LENGTH ? `${message.slice(0, MAX_ERROR_LENGTH)}…[truncated]` : message;
+  const clean = scrubSecrets(message);
+  return clean.length > MAX_ERROR_LENGTH ? `${clean.slice(0, MAX_ERROR_LENGTH)}…[truncated]` : clean;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

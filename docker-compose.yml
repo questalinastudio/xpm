@@ -49,7 +49,11 @@ services:
       PGPASSWORD_FILE: /run/secrets/pg_owner_password
       XPM_WEB_DB_PASSWORD_FILE: /run/secrets/pg_web_password
       XPM_WORKER_DB_PASSWORD_FILE: /run/secrets/pg_worker_password
-    secrets: [pg_owner_password, pg_web_password, pg_worker_password]
+      XPM_VAULT_DB_PASSWORD_FILE: /run/secrets/pg_vault_password
+      XPM_GATEWAY_DB_PASSWORD_FILE: /run/secrets/pg_gateway_password
+      XPM_PM_TOOLS_DB_PASSWORD_FILE: /run/secrets/pg_pm_tools_password
+      XPM_DEV_TOOLS_DB_PASSWORD_FILE: /run/secrets/pg_dev_tools_password
+    secrets: [pg_owner_password, pg_web_password, pg_worker_password, pg_vault_password, pg_gateway_password, pg_pm_tools_password, pg_dev_tools_password]
     networks: [internal]
     depends_on:
       postgres: { condition: service_healthy }
@@ -91,6 +95,95 @@ services:
     depends_on:
       migrate: { condition: service_completed_successfully }
 
+  # Tool gateway: the agents' only door. Authorizes every tool call by role,
+  # gates payloads for unredacted data, and writes traces. Holds three narrow
+  # DB roles and the read-only snapshot; no vault, no mail, no send capability.
+  gateway:
+    <<: *app
+    command: ["node", "apps/gateway/dist/main.js"]
+    environment:
+      <<: *db-env
+      PGUSER: xpm_gateway
+      XPM_GATEWAY_DB_PASSWORD_FILE: /run/secrets/pg_gateway_password
+      PGPASSWORD_FILE: /run/secrets/pg_gateway_password
+      XPM_PM_TOOLS_DB_PASSWORD_FILE: /run/secrets/pg_pm_tools_password
+      XPM_DEV_TOOLS_DB_PASSWORD_FILE: /run/secrets/pg_dev_tools_password
+      XPM_PM_RUNTIME_TOKEN_FILE: /run/secrets/pm_runtime_token
+      XPM_DEV_RUNTIME_TOKEN_FILE: /run/secrets/dev_runtime_token
+      XPM_SNAPSHOT_DIR: /snapshots/current
+      XPM_AI_PROVIDER: simulated
+    secrets: [pg_gateway_password, pg_pm_tools_password, pg_dev_tools_password, pm_runtime_token, dev_runtime_token]
+    volumes:
+      - source_snapshots:/snapshots:ro
+    networks: [internal, agents_pm, agents_dev]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4100/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Agent runtimes: empty, read-only containers. Their only route is to the
+  # gateway, on a network shared with nothing else. No database, no files,
+  # no internet, no sending capability.
+  pm-runtime:
+    <<: *app
+    command: ["node", "apps/agent-runtime/dist/main.js"]
+    environment:
+      AGENT_ROLE: pm
+      XPM_GATEWAY_URL: http://gateway:4100
+      XPM_RUNTIME_TOKEN_FILE: /run/secrets/pm_runtime_token
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    secrets: [pm_runtime_token]
+    networks: [agents_pm]
+    depends_on:
+      gateway: { condition: service_healthy }
+
+  dev-runtime:
+    <<: *app
+    command: ["node", "apps/agent-runtime/dist/main.js"]
+    environment:
+      AGENT_ROLE: dev
+      XPM_GATEWAY_URL: http://gateway:4100
+      XPM_RUNTIME_TOKEN_FILE: /run/secrets/dev_runtime_token
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    secrets: [dev_runtime_token]
+    networks: [agents_dev]
+    depends_on:
+      gateway: { condition: service_healthy }
+
+  # Intake tool (Milestone 3 makes this a long-running Gmail/SMS service).
+  # The only service holding the master key and the vault role.
+  intake:
+    <<: *app
+    profiles: [tools]
+    restart: "no"
+    entrypoint: ["node", "apps/intake/dist/cli.js"]
+    command: ["help"]
+    environment:
+      <<: *db-env
+      PGUSER: xpm_vault
+      PGPASSWORD_FILE: /run/secrets/pg_vault_password
+      XPM_MASTER_KEY_FILE: /run/secrets/protected_master_key
+      XPM_SAMPLE_DATA: ${XPM_SAMPLE_DATA:-false}
+    secrets: [pg_vault_password, protected_master_key]
+    networks: [internal]
+
+  # Source snapshot tool (Milestone 5 adds GitHub sync). No database, no network.
+  reposync:
+    <<: *app
+    profiles: [tools]
+    restart: "no"
+    entrypoint: ["node", "packages/privacy/dist/snapshot-cli.js"]
+    command: ["help"]
+    network_mode: none
+    environment:
+      XPM_SAMPLE_DATA: ${XPM_SAMPLE_DATA:-false}
+      XPM_SNAPSHOT_ROOT: /snapshots
+    volumes:
+      - source_snapshots:/snapshots
+
   # Master key tool (interactive, on demand): docker compose run --rm keytool <command>
   keytool:
     <<: *app
@@ -123,7 +216,15 @@ networks:
   # No route to the outside world: database and worker traffic stays here.
   internal:
     internal: true
+  # One network per agent runtime, shared only with the gateway.
+  agents_pm:
+    internal: true
+  agents_dev:
+    internal: true
   edge: {}
+
+volumes:
+  source_snapshots: {}
 
 secrets:
   pg_owner_password:
@@ -132,3 +233,17 @@ secrets:
     file: ${XPM_SECRETS_DIR:-./secrets}/pg_web_password
   pg_worker_password:
     file: ${XPM_SECRETS_DIR:-./secrets}/pg_worker_password
+  pg_vault_password:
+    file: ${XPM_SECRETS_DIR:-./secrets}/pg_vault_password
+  pg_gateway_password:
+    file: ${XPM_SECRETS_DIR:-./secrets}/pg_gateway_password
+  pg_pm_tools_password:
+    file: ${XPM_SECRETS_DIR:-./secrets}/pg_pm_tools_password
+  pg_dev_tools_password:
+    file: ${XPM_SECRETS_DIR:-./secrets}/pg_dev_tools_password
+  pm_runtime_token:
+    file: ${XPM_SECRETS_DIR:-./secrets}/pm_runtime_token
+  dev_runtime_token:
+    file: ${XPM_SECRETS_DIR:-./secrets}/dev_runtime_token
+  protected_master_key:
+    file: ${XPM_SECRETS_DIR:-./secrets}/protected_master_key

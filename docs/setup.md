@@ -1,6 +1,6 @@
 # Questalina Desk: setup and operations
 
-Status: Milestone 1 (local foundation, authentication, durable jobs).
+Status: Milestones 1–2 (foundation, authentication, durable jobs; privacy, agent isolation, traces).
 
 ## What runs
 
@@ -11,6 +11,12 @@ Status: Milestone 1 (local foundation, authentication, durable jobs).
 | `worker`   | Durable job worker                        | `internal`         | no |
 | `migrate`  | One-shot schema migration and role setup  | `internal`         | no |
 | `postgres` | PostgreSQL 17                             | `internal`         | no |
+| `gateway`  | Agent tool gateway: authorization, payload gating, traces | `internal`, `agents_pm`, `agents_dev` | no |
+| `pm-runtime` | PM agent tool loop (empty, read-only container) | `agents_pm` only | no |
+| `dev-runtime` | Dev-manager agent tool loop (empty, read-only container) | `agents_dev` only | no |
+| `intake` (tool) | Encrypts originals, redacts, stores sanitized messages | `internal` | no |
+| `reposync` (tool) | Builds the sanitized source snapshot | none | no |
+| `keytool` (tool) | Master key: generate, verify, restore | none | no |
 
 `internal` is a Docker `internal: true` network with no route to the internet.
 PostgreSQL, the server and the worker publish no host ports; only Caddy does,
@@ -22,7 +28,11 @@ Each service connects to PostgreSQL with its own role:
 |--------------|---------|--------|
 | `xpm_owner`  | `migrate` | Schema owner. Never used by long-running services. |
 | `xpm_web`    | `server`, admin CLI | Accounts, sessions, jobs, cases, audit. |
-| `xpm_worker` | `worker` | Jobs, attempts, checkpoints, heartbeats. No access to accounts or sessions. |
+| `xpm_worker` | `worker` | Jobs, attempts, checkpoints, heartbeats, agent turn attempts. No accounts, sessions, or vault. |
+| `xpm_vault`  | `intake` | The only role with the `vault` schema (encrypted originals, identity mappings). |
+| `xpm_gateway` | `gateway` | Agent turns and traces. No correspondence, knowledge, or vault. |
+| `xpm_pm_tools` | `gateway` (PM tools) | Cleared sanitized messages (`pm_messages` view), product knowledge. No source, briefs, or traces. |
+| `xpm_dev_tools` | `gateway` (dev tools) | Case briefs. No correspondence, identities, knowledge, or traces. |
 
 ## Prerequisites
 
@@ -85,6 +95,80 @@ docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./questalina-
 The CA key lives in `${XPM_DATA_DIR}/caddy`. Keep that directory in backups;
 if you delete it, a new CA is created and every device must trust the new root.
 
+## Master key and paper backup
+
+Original messages and the placeholder↔identity mapping are encrypted with
+AES-256-GCM under a master key held in `secrets/protected_master_key`. Only
+the `intake` container receives it. PostgreSQL never sees it.
+
+| Task | Command (run in your own terminal) |
+|------|---------|
+| Create the key and paper copy (once) | `docker compose run --rm keytool generate` |
+| Check a paper copy | `docker compose run --rm keytool verify` |
+| Show the fingerprint | `docker compose run --rm keytool status` |
+| Rebuild the key file from paper | `docker compose run --rm keytool restore` |
+
+The tool runs with no network. It shows or reads the key only on an
+interactive terminal, so the key cannot end up in logs or chat transcripts.
+The paper format is 14 groups of 4 characters, the last group being a
+checksum. Lowercase and O/I/L mix-ups are tolerated, and a mistyped character
+is rejected rather than silently accepted. **If both the key file and the paper
+copy are lost, encrypted originals cannot be recovered.** Sanitized messages,
+knowledge, and traces are not encrypted with this key and stay readable.
+
+## Privacy pipeline
+
+1. **Normalization.** NFKC, invisible/bidi control characters removed, HTML
+   reduced to text (hidden elements, scripts, and comments dropped).
+2. **Protected original.** The raw message is encrypted into `vault.originals`.
+3. **Redaction.**
+   - Identities become stable placeholders: `[PERSON_n]`, `[EMAIL_n]`, `[PHONE_n]`. The same person keeps the same placeholder across messages, and the mapping is encrypted in `vault.identities`, looked up by keyed hash.
+   - Cards (Luhn-checked), US SSNs, street addresses, IP addresses, credentials, and URL token parameters become fixed markers.
+4. **Hold for review.** Uncertain findings (long digit runs, random-looking
+   tokens, weak credential assignments) are masked as `[HELD_n]`, and the
+   message is marked `held_for_review`. Agents never see held messages.
+5. **Defense in depth.** The gateway re-checks every outbound model payload and
+   tool result. Anything that still looks like an email, phone, card,
+   government ID, or credential is masked. If it appears in a model request,
+   the call is blocked and recorded without the data.
+
+**Known limitations.** Detection is pattern-based. Names are found from
+headers, salutations, signatures, and self-introductions; a name that appears
+only in free text (for example "my husband Desmond") is not detected. Treat
+redaction as risk reduction, not a guarantee.
+
+**Source snapshot.** `reposync` writes a read-only copy of the source to the
+`source_snapshots` volume:
+- Excluded: VCS metadata, dependencies, build output, symlinks, binaries, files over 512 KB, `.env*` (except `.env.example`-style templates), keys and certificates, credential files, and database dumps.
+- Embedded credentials are replaced with `[REDACTED_SECRET:<rule>]`, and real-looking email addresses are replaced.
+- Files with ambiguous findings are held (excluded and listed).
+- The manifest records every decision, never the secret values.
+
+## Agent isolation
+
+| | PM agent | Dev-manager agent |
+|---|---|---|
+| Tools | `case.messages`, `knowledge.search` | `case.brief`, `source.search`, `source.read` |
+| Can read | Cleared sanitized messages, product knowledge | Case briefs, sanitized snapshot (read-only) |
+| Cannot read | Source, briefs, traces, held messages, vault | Mail, identities, knowledge, traces, vault |
+
+- Neither agent has a send, write, shell, or mailbox tool. Those don't exist in the gateway at all.
+- Runtimes hold only their own gateway token. They run read-only, on their own internal network, with no internet, database, or files.
+- The gateway composes the system instructions and the tool list, so a runtime cannot change either.
+- Each turn gets a ticket that is invalid once the turn finishes, is superseded, or passes its deadline.
+- Model and tool calls per turn are capped (8 and 24).
+
+## Traces
+
+- **Model calls.** Each call is written to `llm_calls` as `pending` before it is sent. The record includes the exact outbound payload, instruction version, tool list, parameters, and source ref. It is completed afterwards with the response, tool requests, latency, usage, and provider request ID, or with a scrubbed error.
+- **Tool calls.** Each `tool_calls` row records the role decision (allowed/denied and the reason), arguments, result, and evidence references.
+- **Turns.** Turns carry a decision summary: evidence, assumptions, uncertainty, alternatives, outcome, and reason.
+- **Retries.** A retry is a new turn attempt. The interrupted attempt and its calls stay visible as `abandoned` or `failed`.
+- **Sensitivity.** Dev-manager traces are marked `technical`. The PM's database role cannot read any trace.
+
+Errors and logs pass through credential scrubbing: every loaded secret value
+is replaced by exact match, along with common credential patterns.
+
 ## Day-to-day operations
 
 | Task | Command |
@@ -96,7 +180,8 @@ if you delete it, a new CA is created and every device must trust the new root.
 | List administrators | `docker compose run --rm --no-deps server node apps/server/dist/cli.js admin list` |
 | Remove sample cases | `docker compose run --rm --no-deps server node apps/server/dist/cli.js sample clear` |
 | Stop | `docker compose down` (data stays in `XPM_DATA_DIR`) |
-| Upgrade | `git pull && docker compose up -d --build --wait` (migrations run automatically) |
+| Upgrade | `git pull && scripts/init-secrets.sh && docker compose up -d --build --wait` (new secrets are created if a release adds services; migrations run automatically) |
+| Load synthetic sample data (sample mode only) | `docker compose run --rm reposync synthetic && docker compose restart gateway && docker compose run --rm intake ingest-synthetic` |
 
 Containers use `restart: unless-stopped`, so they come back after a workstation
 reboot as long as Docker is enabled at boot.
@@ -136,7 +221,8 @@ reconciliation.
 pnpm install
 pnpm typecheck
 pnpm test                     # unit + integration (Testcontainers PostgreSQL; needs Docker)
-scripts/acceptance-m1.sh      # end-to-end against real containers on port 18443, disposable
+scripts/acceptance-m1.sh      # M1 end-to-end against real containers on port 18443, disposable
+scripts/acceptance-m2.sh      # M2: isolation, injection, traces, and a leak scan of DB and all container logs
 ```
 
 The acceptance script runs a separate Compose project (`xpm-accept`) with its

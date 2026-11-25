@@ -1,0 +1,23 @@
+{
+  "name": "@xpm/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@xpm/core": "workspace:*",
+    "@xpm/privacy": "workspace:*",
+    "fastify": "^5.4.0",
+    "zod": "^3.25.0"
+  }
+}

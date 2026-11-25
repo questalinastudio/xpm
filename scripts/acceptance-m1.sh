@@ -70,7 +70,7 @@ cleanup >/dev/null 2>&1
 mkdir -p "$WORK"
 scripts/init-secrets.sh "$XPM_SECRETS_DIR" >/dev/null
 if dc up -d --build --wait --wait-timeout 180 >"$WORK/up.log" 2>&1; then ok "stack builds and becomes healthy"; else bad "stack failed to start" "see $WORK/up.log"; KEEP=1; exit 1; fi
-check "migrations applied" test "$(psql_q "SELECT name FROM schema_migrations ORDER BY version DESC LIMIT 1")" = "0002_worker_heartbeat_cleanup"
+check "migrations applied" test "$(psql_q "SELECT name FROM schema_migrations ORDER BY version DESC LIMIT 1")" = "0003_privacy_agents_traces"
 check "migrate container exited successfully" test "$(docker inspect -f '{{.State.ExitCode}}' "$(dc ps -aq migrate)")" = "0"
 dc cp caddy:/data/caddy/pki/authorities/local/root.crt "$CA" >/dev/null 2>&1
 check "dashboard served over HTTPS with the local CA" test "$(curl -sS --cacert "$CA" -o /dev/null -w '%{http_code}' "$BASE/")" = "200"

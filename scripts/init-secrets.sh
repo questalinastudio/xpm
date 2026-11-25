@@ -5,7 +5,8 @@ set -euo pipefail
 dir="${1:-${XPM_SECRETS_DIR:-./secrets}}"
 mkdir -p "$dir"
 chmod 700 "$dir"
-for name in pg_owner_password pg_web_password pg_worker_password; do
+for name in pg_owner_password pg_web_password pg_worker_password pg_vault_password pg_gateway_password \
+            pg_pm_tools_password pg_dev_tools_password pm_runtime_token dev_runtime_token; do
   f="$dir/$name"
   if [[ -s "$f" ]]; then
     echo "exists:  $f"
