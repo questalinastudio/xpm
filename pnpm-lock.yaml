@@ -227,6 +227,9 @@ importers:
       '@xpm/privacy':
         specifier: workspace:*
         version: link:../../packages/privacy
+      zod:
+        specifier: ^3.25.0
+        version: 3.25.76
 
   apps/server:
     dependencies:

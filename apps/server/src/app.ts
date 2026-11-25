@@ -313,11 +313,43 @@ export async function buildApp({ pool, config, logger = false }: AppOptions): Pr
 
   app.get('/api/messages', async () => {
     const { rows } = await pool.query(
-      `SELECT m.id, m.source, m.sender_placeholder, m.subject, m.body, m.status, m.held_reasons, m.redaction_summary, m.received_at,
+      `SELECT m.id, m.source, m.sender_placeholder, m.subject, m.body, m.status, m.held_reasons, m.redaction_summary, m.received_at, m.metadata,
               c.reference AS case_reference
        FROM messages m LEFT JOIN cases c ON c.id = m.case_id ORDER BY m.received_at DESC LIMIT 100`,
     );
     return { messages: rows };
+  });
+
+  // -------------------------------------------------------------------------
+  // Intake: connection status and manual SMS entry
+  // -------------------------------------------------------------------------
+
+  app.get('/api/connections', async () => {
+    const { rows } = await pool.query(
+      `SELECT id, kind, account, status, status_reason, activated_at, last_sync_at, last_success_at, last_error, imported_count, skipped_count
+       FROM connections ORDER BY account`,
+    );
+    return { connections: rows };
+  });
+
+  // The server holds no encryption key: SMS text goes straight to the intake
+  // service over the internal network and is stored only after redaction.
+  app.post('/api/intake/sms', async (req, reply) => {
+    if (!config.intakeUrl || !config.intakeToken) return reply.code(503).send({ error: 'unavailable', message: 'SMS intake is not configured' });
+    let res: Response;
+    try {
+      res = await fetch(`${config.intakeUrl}/v1/sms`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${config.intakeToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify(req.body ?? {}),
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch {
+      return reply.code(503).send({ error: 'unavailable', message: 'Intake service is not reachable; nothing was saved. Try again shortly.' });
+    }
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (res.ok) await audit(pool, req.session!.username, 'sms.submit', String(body.messageId ?? ''), { created: body.created, status: body.status });
+    return reply.code(res.status).send(body);
   });
 
   // -------------------------------------------------------------------------

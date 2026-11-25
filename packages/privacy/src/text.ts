@@ -10,7 +10,8 @@ const INVISIBLE = /[­᠎​-‏‪-‮⁠-⁤⁦-⁩﻿]/g;
 const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
 
 export function normalizeText(input: string): string {
-  return input
+  // Encoded words would otherwise carry names past redaction in base64.
+  return decodeEncodedWords(input)
     .normalize('NFKC')
     .replace(/\r\n?/g, '\n')
     .replace(INVISIBLE, '')
@@ -53,3 +54,21 @@ export function entropy(s: string): number {
   }
   return h;
 }
+
+/** Decode RFC 2047 encoded words (MIME headers), e.g. "=?UTF-8?B?SmFuZQ==?=". */
+export function decodeEncodedWords(value: string): string {
+  return value
+    .replace(/\?=\s+=\?/g, '?==?')
+    .replace(/=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g, (_m, charset: string, enc: string, text: string) => {
+      try {
+        const bytes =
+          enc.toUpperCase() === 'B'
+            ? Buffer.from(text, 'base64')
+            : Buffer.from(text.replace(/_/g, ' ').replace(/=([0-9A-F]{2})/gi, (_x, h: string) => String.fromCharCode(Number.parseInt(h, 16))), 'latin1');
+        return new TextDecoder(charset.toLowerCase(), { fatal: false }).decode(bytes);
+      } catch {
+        return text;
+      }
+    });
+}
+

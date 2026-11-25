@@ -1,0 +1,21 @@
+# Acceptance-only overlay: points intake at a fake Google. Never used in production.
+services:
+  fake-google:
+    image: xpm-app:${XPM_IMAGE_TAG:-local}
+    entrypoint: ["node", "apps/intake/dist/cli.js"]
+    command: ["fake-google", "--port", "4500"]
+    environment:
+      XPM_ALLOW_FAKE_GOOGLE: "true"
+      XPM_FAKE_ACCOUNT: owner@questalina.example
+    networks: [google_egress]
+    ports: ["127.0.0.1:4500:4500"]
+  intake:
+    environment:
+      XPM_GOOGLE_AUTH_URL: http://fake-google:4500/o/oauth2/v2/auth
+      XPM_GOOGLE_TOKEN_URL: http://fake-google:4500/token
+      XPM_GOOGLE_REVOKE_URL: http://fake-google:4500/revoke
+      XPM_GMAIL_API_BASE: http://fake-google:4500
+      XPM_GMAIL_POLL_SECONDS: "2"
+      XPM_CUSTOMER_ADDRESSES: info@questalina.example
+    depends_on:
+      fake-google: { condition: service_started }

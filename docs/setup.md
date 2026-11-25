@@ -1,6 +1,6 @@
 # Questalina Desk: setup and operations
 
-Status: Milestones 1–2 (foundation, authentication, durable jobs; privacy, agent isolation, traces).
+Status: Milestones 1–3 (foundation, authentication, durable jobs; privacy, agent isolation, traces; read-only Gmail and manual SMS intake).
 
 ## What runs
 
@@ -14,7 +14,7 @@ Status: Milestones 1–2 (foundation, authentication, durable jobs; privacy, age
 | `gateway`  | Agent tool gateway: authorization, payload gating, traces | `internal`, `agents_pm`, `agents_dev` | no |
 | `pm-runtime` | PM agent tool loop (empty, read-only container) | `agents_pm` only | no |
 | `dev-runtime` | Dev-manager agent tool loop (empty, read-only container) | `agents_dev` only | no |
-| `intake` (tool) | Encrypts originals, redacts, stores sanitized messages | `internal` | no |
+| `intake` | Gmail read-only polling and manual SMS; encrypts originals, redacts, stores sanitized messages | `internal`, `google_egress` | no |
 | `reposync` (tool) | Builds the sanitized source snapshot | none | no |
 | `keytool` (tool) | Master key: generate, verify, restore | none | no |
 
@@ -65,6 +65,7 @@ server.
 ```bash
 cp .env.example .env          # set XPM_HOST / XPM_BIND_ADDR / XPM_PUBLIC_ORIGIN
 scripts/init-secrets.sh       # generates database passwords in ./secrets (never overwrites)
+docker compose run --rm keytool generate   # master key + paper backup (interactive; required before first start)
 docker compose up -d --build --wait
 ```
 
@@ -169,6 +170,79 @@ redaction as risk reduction, not a guarantee.
 Errors and logs pass through credential scrubbing: every loaded secret value
 is replaced by exact match, along with common credential patterns.
 
+## Connecting Gmail (read-only)
+
+The intake service reads **new** mail from one Gmail mailbox. Mail to the
+addresses in `XPM_CUSTOMER_ADDRESSES` (for example the `info@` alias) is
+flagged as likely customer correspondence. All other new mail is still read for
+the briefing.
+
+**What it never does.** It does not send, delete, label, archive, or mark mail
+as read:
+- The only scope it requests is `gmail.readonly`.
+- Its HTTP client refuses any Gmail request that is not a GET, and any host that is not Google's.
+
+### One-time Google Cloud setup (done 2026-11-25)
+
+- **Project:** `questalina-desk-xpm`, in the `questalinastudio.com` organization, with the Gmail API enabled.
+- **Consent screen:** Google Auth Platform → Audience **Internal**, Data access **only** `.../auth/gmail.readonly`.
+- **Client:** Desktop client `desk-reader`. Its JSON file is stored as `secrets/gmail_reader_client.json` (mode 600, gitignored).
+
+### Sign in (once, and again only if access is revoked)
+
+The workstation has no browser, so the sign-in runs on the workstation while
+your laptop's browser approves it through an SSH tunnel. No public callback
+exists, and the helper's port is only on the workstation's 127.0.0.1.
+
+1. On your laptop, open the tunnel and leave it running:
+   ```bash
+   ssh -N -L 8765:127.0.0.1:8765 eko@10.0.0.125
+   ```
+2. In a second terminal on the workstation (an SSH session is fine):
+   ```bash
+   cd ~/workspaces/xpm
+   docker compose run --rm -p 127.0.0.1:8765:8765 intake gmail-connect --account chris.huang@questalinastudio.com
+   ```
+3. Open the printed `https://accounts.google.com/...` link in the laptop
+   browser, sign in as that account, and approve read-only access. The page
+   says **Connected**, and the terminal prints `✔ Connected`.
+
+The helper refuses the result if a different Google account approves, or if
+any scope broader than read-only is granted. The refresh token is stored
+encrypted with the master key. **Only mail arriving after this moment is
+imported. Nothing historical is.**
+
+### Operation
+
+| Situation | What happens |
+|---|---|
+| New mail | Imported within `XPM_GMAIL_POLL_SECONDS` (default 60). Sent mail, drafts, spam, trash, and chats are skipped. |
+| Restart or crash | Resumes from the saved Gmail history checkpoint; each message is imported at most once. |
+| Internet or Google outage | Status **degraded** on the dashboard; retries automatically and imports what arrived meanwhile. |
+| Gmail history expired (long outage) | Recovers by listing mail since the last import (one hour of overlap), still excluding anything before activation. |
+| Access revoked or expired | Status **paused** with a reason; nothing is lost. Run the sign-in again: the original activation boundary is kept and mail that arrived while paused is imported. |
+
+Commands: `docker compose run --rm intake gmail-status` shows the state, and
+`docker compose run --rm intake gmail-disconnect --account <email>` revokes
+access at Google and stops reading.
+
+**Network note.** The intake container has outbound internet on its own
+`google_egress` network. The restriction to Google hosts is enforced in the
+application's HTTP client. A network-level egress proxy is planned alongside
+the AI provider in Milestone 4.
+
+## Manual SMS entry
+
+Dashboard → **Add SMS**. Paste the text, the sender's number, an optional
+name, the time received, and optional context. The dashboard server forwards
+it over the internal network to the intake service; the server itself holds no
+encryption key. It goes through the same redaction as email, and texts from
+the same number share a thread without the number being stored. Submitting the
+same form twice does not create a duplicate.
+
+Alternatively, forward an SMS from the iPhone by email to `info@`; it arrives
+as ordinary mail.
+
 ## Day-to-day operations
 
 | Task | Command |
@@ -223,6 +297,7 @@ pnpm typecheck
 pnpm test                     # unit + integration (Testcontainers PostgreSQL; needs Docker)
 scripts/acceptance-m1.sh      # M1 end-to-end against real containers on port 18443, disposable
 scripts/acceptance-m2.sh      # M2: isolation, injection, traces, and a leak scan of DB and all container logs
+scripts/acceptance-m3.sh      # M3: Gmail intake against a fake Google container, outages, revocation, SMS
 ```
 
 The acceptance script runs a separate Compose project (`xpm-accept`) with its

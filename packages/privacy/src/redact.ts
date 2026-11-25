@@ -218,7 +218,12 @@ export function detectSensitive(text: string, opts: { knownPeople?: KnownPerson[
   }
   // Longest names first so "Jane Doe" wins over "Jane".
   for (const [name, canonical] of [...nameToCanonical.entries()].sort((a, b) => b[0].length - a[0].length)) {
-    const re = new RegExp(`(?<![\\p{L}\\p{N}_])${escapeRegex(name)}(?![\\p{L}\\p{N}_])`, 'giu');
+    // Full names match in any case. A single name part matches only as written
+    // (capitalized) or in capitals, so "Will" or "Grace" do not blank out the
+    // words "will" and "grace".
+    const single = !/\s/.test(name);
+    const pattern = single ? `(?:${escapeRegex(name)}|${escapeRegex(name.toUpperCase())})` : escapeRegex(name);
+    const re = new RegExp(`(?<![\\p{L}\\p{N}_])${pattern}(?![\\p{L}\\p{N}_])`, single ? 'gu' : 'giu');
     for (const m of text.matchAll(re)) push('person', m.index!, m.index! + m[0].length, canonical);
   }
 

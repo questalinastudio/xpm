@@ -35,7 +35,7 @@ export interface IngestResult {
   status: 'ready' | 'held_for_review';
 }
 
-function identityHmac(mk: MasterKey, kind: IdentityKind, canonical: string): string {
+export function identityHmac(mk: MasterKey, kind: IdentityKind, canonical: string): string {
   const subkey = createHmac('sha256', mk.key).update('xpm-identity-hmac-v1').digest();
   return createHmac('sha256', subkey).update(`${kind}:${canonical}`).digest('hex');
 }
@@ -85,7 +85,7 @@ export async function ingestMessage(
   pool: Pool,
   mk: MasterKey,
   raw: RawMessage,
-  opts: { caseId?: string | null } = {},
+  opts: { caseId?: string | null; metadata?: Record<string, unknown> } = {},
 ): Promise<IngestResult> {
   return withTx(pool, async (tx: PoolClient) => {
     const original = await tx.query(
@@ -128,8 +128,8 @@ export async function ingestMessage(
     }
     const msg = await tx.query(
       `INSERT INTO messages (original_id, source, thread_key, case_id, sender_placeholder, subject, body, received_at,
-                             status, redaction_summary, held_reasons)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb) RETURNING id`,
+                             status, redaction_summary, held_reasons, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12::jsonb) RETURNING id`,
       [
         original.rows[0].id,
         raw.source,
@@ -142,6 +142,7 @@ export async function ingestMessage(
         status,
         JSON.stringify({ counts, placeholders: [...new Set([...redactedBody.placeholders, ...redactedSubject.placeholders])] }),
         JSON.stringify(ambiguous),
+        JSON.stringify(opts.metadata ?? {}),
       ],
     );
     await tx.query(`INSERT INTO audit_log (actor, action, target, details) VALUES ('intake', 'message.ingest', $1, $2::jsonb)`, [

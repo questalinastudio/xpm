@@ -64,7 +64,7 @@ dc --profile tools build >"$WORK/build.log" 2>&1 || { bad "image build" "see $WO
 dc run --rm -T keytool generate --no-paper-test-only >/dev/null 2>&1
 check "master key created (test-only, no paper)" test -s "$XPM_SECRETS_DIR/protected_master_key"
 if dc up -d --wait --wait-timeout 180 >"$WORK/up.log" 2>&1; then ok "stack healthy (gateway, pm-runtime, dev-runtime included)"; else bad "stack failed to start" "see $WORK/up.log"; KEEP=1; exit 1; fi
-check "migration 0003 applied" test "$(psql_q "SELECT name FROM schema_migrations ORDER BY version DESC LIMIT 1")" = "0003_privacy_agents_traces"
+check "latest migration applied" test "$(psql_q "SELECT name FROM schema_migrations ORDER BY version DESC LIMIT 1")" = "0004_gmail_sms_intake"
 dc run --rm -T reposync synthetic >"$WORK/reposync.log" 2>&1
 check "sanitized snapshot built" grep -q '"held":1' "$WORK/reposync.log"
 dc restart gateway >/dev/null 2>&1 && dc up -d --wait --wait-timeout 60 >/dev/null 2>&1

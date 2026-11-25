@@ -31,6 +31,10 @@ function leakedCanaries(text: string): string[] {
 }
 
 describe('normalization', () => {
+  it('decodes MIME encoded words so they cannot carry names past redaction', () => {
+    expect(normalizeText('Re: =?UTF-8?B?Q2FsbCBtZSwgTWFyaXNvbA==?= and =?ISO-8859-1?Q?Jos=E9?=')).toBe('Re: Call me, Marisol and José');
+  });
+
   it('removes invisible characters used to hide instructions', () => {
     expect(normalizeText('Th​anks‮ evil﻿')).toBe('Thanks evil');
   });
@@ -73,6 +77,20 @@ describe('message redaction', () => {
   it('keeps product language intact', async () => {
     const r = await redactText('The export button on the history page does nothing in Safari 17.2.', { resolve: createMemoryResolver() });
     expect(r.text).toBe('The export button on the history page does nothing in Safari 17.2.');
+  });
+
+  it('does not blank out ordinary words that match a single name part', async () => {
+    const r = await redactText('Will Turner wrote: will the export grace period apply? Thanks, Will', {
+      knownPeople: [{ name: 'Will Turner' }, { name: 'Grace Hopper' }],
+      resolve: createMemoryResolver(),
+    });
+    expect(r.text).toBe('[PERSON_1] wrote: will the export grace period apply? Thanks, [PERSON_1]');
+  });
+
+  it('keeps error messages when scrubbing logged errors', () => {
+    const v = scrubValue({ err: new Error(`failed with ${FAKE.stripeKey}`) }) as { err: { message: string } };
+    expect(v.err.message).toContain('failed with');
+    expect(v.err.message).not.toContain(FAKE.stripeKey);
   });
 
   it('does not treat lowercase phrases as names', async () => {

@@ -11,7 +11,7 @@ FAIL=0
 ok() { printf '  \033[32mOK\033[0m   %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf '  \033[31mFAIL\033[0m %s\n' "$1"; [[ -n "${2:-}" ]] && printf '       → %s\n' "$2"; }
 
-for svc in postgres server worker gateway pm-runtime dev-runtime caddy; do
+for svc in postgres server worker intake gateway pm-runtime dev-runtime caddy; do
   state=$(docker compose ps -a --format '{{.State}}' "$svc" 2>/dev/null)
   [[ "$state" == "running" ]] && ok "$svc running" || bad "$svc is ${state:-missing}" "docker compose up -d --force-recreate $svc"
 done
@@ -32,6 +32,11 @@ fi
 fresh=$(docker compose exec -T postgres psql -U xpm_owner -d xpm -tAc \
   "SELECT count(*) FROM worker_heartbeats WHERE last_seen_at > now() - interval '30 seconds'" 2>/dev/null)
 [[ "${fresh:-0}" -ge 1 ]] && ok "worker heartbeat fresh ($fresh)" || bad "no fresh worker heartbeat" "docker compose logs worker"
+
+gmail=$(docker compose exec -T postgres psql -U xpm_owner -d xpm -tAc "SELECT account || ' ' || status FROM connections WHERE kind = 'gmail_reader'" 2>/dev/null)
+if [[ -z "$gmail" ]]; then ok "Gmail not connected yet (optional until you run the sign-in)"
+elif grep -q ' active$' <<<"$gmail"; then ok "Gmail connected: $gmail"
+else bad "Gmail connection needs attention: $gmail" "docker compose run --rm intake gmail-status; docs/setup.md 'Connecting Gmail'"; fi
 
 if [[ -f "${XPM_SECRETS_DIR:-./secrets}/protected_master_key" ]]; then
   fp=$(docker compose run --rm -T keytool status 2>/dev/null | grep -o 'Fingerprint: [0-9a-f]*' | awk '{print $2}')

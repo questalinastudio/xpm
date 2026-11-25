@@ -112,3 +112,6 @@ tr.clickable:hover, tr.selected { background: var(--row-hover); }
 .badge.blocked, .badge.held_for_review { color: var(--bad); border-color: var(--bad); }
 .badge.claimed, .badge.pending, .badge.queued { color: var(--accent); border-color: var(--accent); }
 details summary { cursor: pointer; }
+.form { display: flex; flex-direction: column; gap: 0.75rem; max-width: 40rem; }
+.form label { display: flex; flex-direction: column; gap: 0.3rem; font-weight: 500; }
+textarea { font: inherit; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.45rem 0.6rem; }

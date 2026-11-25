@@ -69,7 +69,9 @@ services:
       XPM_SAMPLE_DATA: ${XPM_SAMPLE_DATA:-false}
       XPM_SESSION_TTL_HOURS: ${XPM_SESSION_TTL_HOURS:-12}
       XPM_SESSION_IDLE_MINUTES: ${XPM_SESSION_IDLE_MINUTES:-60}
-    secrets: [pg_web_password]
+      XPM_INTAKE_URL: http://intake:4200
+      XPM_INTAKE_SUBMIT_TOKEN_FILE: /run/secrets/intake_submit_token
+    secrets: [pg_web_password, intake_submit_token]
     networks: [internal, edge]
     depends_on:
       migrate: { condition: service_completed_successfully }
@@ -153,22 +155,33 @@ services:
     depends_on:
       gateway: { condition: service_healthy }
 
-  # Intake tool (Milestone 3 makes this a long-running Gmail/SMS service).
-  # The only service holding the master key and the vault role.
+  # Intake: the only service with the master key, the vault role, and the
+  # Gmail read-only authorization. Polls Gmail and accepts manual SMS from the
+  # dashboard server. Its egress network is used only for Google; the client
+  # refuses any other host and any non-GET Gmail request.
   intake:
     <<: *app
-    profiles: [tools]
-    restart: "no"
     entrypoint: ["node", "apps/intake/dist/cli.js"]
-    command: ["help"]
+    command: ["serve"]
     environment:
       <<: *db-env
       PGUSER: xpm_vault
       PGPASSWORD_FILE: /run/secrets/pg_vault_password
       XPM_MASTER_KEY_FILE: /run/secrets/protected_master_key
+      XPM_GMAIL_CLIENT_FILE: /run/secrets/gmail_reader_client
+      XPM_INTAKE_SUBMIT_TOKEN_FILE: /run/secrets/intake_submit_token
+      XPM_CUSTOMER_ADDRESSES: ${XPM_CUSTOMER_ADDRESSES:-}
+      XPM_GMAIL_POLL_SECONDS: ${XPM_GMAIL_POLL_SECONDS:-60}
       XPM_SAMPLE_DATA: ${XPM_SAMPLE_DATA:-false}
-    secrets: [pg_vault_password, protected_master_key]
-    networks: [internal]
+    secrets: [pg_vault_password, protected_master_key, gmail_reader_client, intake_submit_token]
+    networks: [internal, google_egress]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4200/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   # Source snapshot tool (Milestone 5 adds GitHub sync). No database, no network.
   reposync:
@@ -221,6 +234,8 @@ networks:
     internal: true
   agents_dev:
     internal: true
+  # Outbound internet for the intake service only (Google APIs).
+  google_egress: {}
   edge: {}
 
 volumes:
@@ -247,3 +262,7 @@ secrets:
     file: ${XPM_SECRETS_DIR:-./secrets}/dev_runtime_token
   protected_master_key:
     file: ${XPM_SECRETS_DIR:-./secrets}/protected_master_key
+  gmail_reader_client:
+    file: ${XPM_SECRETS_DIR:-./secrets}/gmail_reader_client.json
+  intake_submit_token:
+    file: ${XPM_SECRETS_DIR:-./secrets}/intake_submit_token

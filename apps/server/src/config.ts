@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import { readSecret } from '@xpm/core';
 
 const bool = z
   .enum(['true', 'false', '1', '0', ''])
@@ -18,6 +19,7 @@ const schema = z.object({
   XPM_LOGIN_WINDOW_MINUTES: z.coerce.number().positive().default(15),
   XPM_SAMPLE_DATA: bool,
   XPM_WEB_DIST: z.string().default(fileURLToPath(new URL('../../web/dist/', import.meta.url))),
+  XPM_INTAKE_URL: z.string().url().default('http://intake:4200'),
 });
 
 export interface ServerConfig {
@@ -31,6 +33,9 @@ export interface ServerConfig {
   loginWindowMs: number;
   sampleMode: boolean;
   webDistDir: string;
+  /** Internal intake API for manual SMS; the token comes from a secret file. */
+  intakeUrl?: string;
+  intakeToken?: string;
 }
 
 export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -46,5 +51,7 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     loginWindowMs: c.XPM_LOGIN_WINDOW_MINUTES * 60_000,
     sampleMode: c.XPM_SAMPLE_DATA,
     webDistDir: c.XPM_WEB_DIST,
+    intakeUrl: c.XPM_INTAKE_URL,
+    intakeToken: readSecret('XPM_INTAKE_SUBMIT_TOKEN', env),
   };
 }

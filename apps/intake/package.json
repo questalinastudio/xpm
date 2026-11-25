@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@xpm/core": "workspace:*",
-    "@xpm/privacy": "workspace:*"
+    "@xpm/privacy": "workspace:*",
+    "zod": "^3.25.0"
   }
 }

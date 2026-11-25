@@ -169,6 +169,10 @@ export function scrubSecrets(text: string): string {
 export function scrubValue<T>(value: T, depth = 0): T {
   if (depth > 8) return value;
   if (typeof value === 'string') return scrubSecrets(value) as T;
+  // Error fields are not enumerable; keep them (scrubbed) instead of losing them.
+  if (value instanceof Error) {
+    return { name: value.name, message: scrubSecrets(value.message), ...(value.stack ? { stack: scrubSecrets(value.stack) } : {}) } as T;
+  }
   if (Array.isArray(value)) return value.map((v) => scrubValue(v, depth + 1)) as T;
   if (value && typeof value === 'object' && !(value instanceof Date) && !Buffer.isBuffer(value)) {
     const out: Record<string, unknown> = {};

@@ -394,6 +394,7 @@ function AgentsPanel({ sampleMode }: { sampleMode: boolean }) {
 interface MessageRow {
   id: string; source: string; sender_placeholder: string | null; subject: string; body: string; status: string;
   held_reasons: { rule: string; field: string; marker?: string }[]; received_at: string; case_reference: string | null;
+  metadata?: { channel?: string; likelyCustomer?: boolean; deliveredVia?: string | null };
 }
 
 function MessagesPanel() {
@@ -410,7 +411,10 @@ function MessagesPanel() {
               <strong>{m.subject || '(no subject)'}</strong>
               <span className={`badge ${m.status === 'ready' ? 'succeeded' : 'failed'}`}>{m.status.replace(/_/g, ' ')}</span>
             </div>
-            <span className="muted">{m.source} from {m.sender_placeholder ?? '?'} · {m.case_reference ?? 'no case'} · {fmt(m.received_at)}</span>
+            <span className="muted">
+              {m.source} from {m.sender_placeholder ?? '?'} · {m.case_reference ?? 'no case'} · {fmt(m.received_at)}
+              {m.metadata?.likelyCustomer ? ` · likely customer${m.metadata.deliveredVia ? ` (via ${m.metadata.deliveredVia})` : ''}` : ''}
+            </span>
             {m.held_reasons.length > 0 && <p className="error">Held: {m.held_reasons.map((h) => `${h.marker ?? ''} ${h.rule}`).join(', ')}</p>}
             <pre>{m.body}</pre>
           </li>
@@ -422,10 +426,109 @@ function MessagesPanel() {
 }
 
 // ---------------------------------------------------------------------------
+// Intake: Gmail connection status and manual SMS entry
+// ---------------------------------------------------------------------------
+
+interface ConnectionRow {
+  id: string; account: string; status: string; status_reason: string | null; activated_at: string; last_sync_at: string | null;
+  last_success_at: string | null; last_error: string | null; imported_count: number; skipped_count: number;
+}
+
+function ConnectionsPanel() {
+  const { data, error } = usePoll(() => api<{ connections: ConnectionRow[] }>('/api/connections'), 10000, []);
+  return (
+    <section className="card">
+      <h2>Mail intake</h2>
+      {error && <p className="error">{error}</p>}
+      {data && data.connections.length === 0 && (
+        <p className="muted">Gmail is not connected yet. Run the one-time sign-in described in docs/setup.md ("Connecting Gmail").</p>
+      )}
+      {data?.connections.map((c) => (
+        <div key={c.id} className="stat">
+          <span className={`dot ${c.status === 'active' ? 'ok' : c.status === 'degraded' ? 'neutral' : 'bad'}`} />
+          <div>
+            <strong>{c.account} · <span className={`badge ${c.status === 'active' ? 'succeeded' : 'failed'}`}>{c.status}</span></strong>
+            {c.status_reason && <span className={c.status === 'paused' ? 'error' : 'muted'}>{c.status_reason}</span>}
+            <span className="muted">
+              Read-only since {fmt(c.activated_at)} · last success {fmt(c.last_success_at)} · {c.imported_count} imported, {c.skipped_count} skipped
+            </span>
+            {c.last_error && c.status !== 'active' && <span className="muted">Last error: {c.last_error}</span>}
+          </div>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function newSubmissionId(): string {
+  return crypto.randomUUID();
+}
+
+function localNow(): string {
+  const d = new Date();
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 16);
+}
+
+function SmsPanel() {
+  const [submissionId, setSubmissionId] = useState(newSubmissionId);
+  const [from, setFrom] = useState('');
+  const [fromName, setFromName] = useState('');
+  const [receivedAt, setReceivedAt] = useState(localNow);
+  const [text, setText] = useState('');
+  const [context, setContext] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setResult(null);
+    try {
+      const r = await api<{ messageId: string; created: boolean; status: string }>('/api/intake/sms', {
+        method: 'POST',
+        body: {
+          submissionId,
+          from,
+          ...(fromName.trim() ? { fromName: fromName.trim() } : {}),
+          text,
+          receivedAt: new Date(receivedAt).toISOString(),
+          ...(context.trim() ? { context: context.trim() } : {}),
+        },
+      });
+      setResult({ ok: true, message: r.created ? `Saved (${r.status.replace(/_/g, ' ')}). Identifiers were redacted before storage.` : 'Already saved earlier; not duplicated.' });
+      setSubmissionId(newSubmissionId());
+      setText('');
+      setContext('');
+    } catch (err) {
+      setResult({ ok: false, message: (err as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="card">
+      <h2>Add an SMS</h2>
+      <p className="muted">Paste a customer text from your iPhone. It is redacted like email before anything is stored; the original is kept encrypted.</p>
+      <form className="form" onSubmit={submit}>
+        <label>Sender phone number<input value={from} onChange={(e) => setFrom(e.target.value)} placeholder="+1 206 555 0199" required /></label>
+        <label>Sender name (optional)<input value={fromName} onChange={(e) => setFromName(e.target.value)} /></label>
+        <label>Received at<input type="datetime-local" value={receivedAt} onChange={(e) => setReceivedAt(e.target.value)} required /></label>
+        <label>Message text<textarea rows={6} value={text} onChange={(e) => setText(e.target.value)} required maxLength={10000} /></label>
+        <label>Conversation context (optional)<textarea rows={2} value={context} onChange={(e) => setContext(e.target.value)} maxLength={2000} /></label>
+        {result && <p className={result.ok ? 'muted' : 'error'} role="status">{result.message}</p>}
+        <button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save SMS'}</button>
+      </form>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Shell
 // ---------------------------------------------------------------------------
 
-type Tab = 'overview' | 'jobs' | 'agents' | 'messages';
+type Tab = 'overview' | 'jobs' | 'agents' | 'messages' | 'sms';
 
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -476,6 +579,7 @@ export function App() {
           <button className={tab === 'jobs' ? 'tab active' : 'tab'} onClick={() => setTab('jobs')}>Jobs</button>
           <button className={tab === 'agents' ? 'tab active' : 'tab'} onClick={() => setTab('agents')}>Agents</button>
           <button className={tab === 'messages' ? 'tab active' : 'tab'} onClick={() => setTab('messages')}>Messages</button>
+          <button className={tab === 'sms' ? 'tab active' : 'tab'} onClick={() => setTab('sms')}>Add SMS</button>
         </nav>
         <div className="row gap">
           <span className="muted">{session.username}</span>
@@ -486,12 +590,14 @@ export function App() {
         {tab === 'overview' && (
           <>
             <HealthPanel />
+            <ConnectionsPanel />
             <CasesPanel />
           </>
         )}
         {tab === 'jobs' && <JobsPanel sampleMode={session.sampleMode ?? false} />}
         {tab === 'agents' && <AgentsPanel sampleMode={session.sampleMode ?? false} />}
         {tab === 'messages' && <MessagesPanel />}
+        {tab === 'sms' && <SmsPanel />}
       </main>
     </>
   );

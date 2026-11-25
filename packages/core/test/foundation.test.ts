@@ -22,7 +22,7 @@ describe('migrations', () => {
   it('are idempotent on a migrated database', async () => {
     const again = await migrate(db.pool);
     expect(again.applied).toEqual([]);
-    expect(again.current).toBe('0003_privacy_agents_traces');
+    expect(again.current).toBe('0004_gmail_sms_intake');
   });
 
   it('refuse to run if an applied migration was modified', async () => {

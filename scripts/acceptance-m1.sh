@@ -39,7 +39,7 @@ cleanup() {
     echo; echo "KEEP=1: stack left running at $BASE (project $COMPOSE_PROJECT_NAME)"
     return
   fi
-  dc down --remove-orphans >/dev/null 2>&1
+  dc --profile tools down -v --remove-orphans >/dev/null 2>&1
   # Postgres files belong to the container's uid; remove them from a container.
   docker run --rm -v "$WORK:/w" alpine:3.20 rm -rf /w/data >/dev/null 2>&1
   rm -rf "$WORK"
@@ -69,8 +69,9 @@ section "Fresh installation"
 cleanup >/dev/null 2>&1
 mkdir -p "$WORK"
 scripts/init-secrets.sh "$XPM_SECRETS_DIR" >/dev/null
+docker compose run --rm -T keytool generate --no-paper-test-only >/dev/null 2>&1
 if dc up -d --build --wait --wait-timeout 180 >"$WORK/up.log" 2>&1; then ok "stack builds and becomes healthy"; else bad "stack failed to start" "see $WORK/up.log"; KEEP=1; exit 1; fi
-check "migrations applied" test "$(psql_q "SELECT name FROM schema_migrations ORDER BY version DESC LIMIT 1")" = "0003_privacy_agents_traces"
+check "migrations applied" test "$(psql_q "SELECT name FROM schema_migrations ORDER BY version DESC LIMIT 1")" = "0004_gmail_sms_intake"
 check "migrate container exited successfully" test "$(docker inspect -f '{{.State.ExitCode}}' "$(dc ps -aq migrate)")" = "0"
 dc cp caddy:/data/caddy/pki/authorities/local/root.crt "$CA" >/dev/null 2>&1
 check "dashboard served over HTTPS with the local CA" test "$(curl -sS --cacert "$CA" -o /dev/null -w '%{http_code}' "$BASE/")" = "200"
